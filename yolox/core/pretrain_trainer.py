@@ -1,3 +1,4 @@
+
 # yolox/core/pretrain_trainer.py
 
 import datetime
@@ -12,25 +13,14 @@ from torch.utils.tensorboard import SummaryWriter
 
 from yolox.data import DataPrefetcher
 from yolox.utils import (
-    MeterBuffer,
-    ModelEMA,
-    WandbLogger,
-    get_local_rank,
-    get_rank,
-    get_world_size,
-    gpu_mem_usage,
-    is_parallel,
-    load_ckpt,
-    mem_usage,
-    save_checkpoint,
-    setup_logger,
-    synchronize,
+    MeterBuffer, ModelEMA, WandbLogger,
+    get_local_rank, get_model_info, get_rank, get_world_size,
+    gpu_mem_usage, is_parallel, load_ckpt, mem_usage,
+    save_checkpoint, setup_logger, synchronize
 )
-
 
 class PretrainTrainer:
     def __init__(self, exp, args):
-        # init function defines basic attrs, other attrs are built in before_train methods.
         self.exp = exp
         self.args = args
 
@@ -51,7 +41,7 @@ class PretrainTrainer:
 
         # metric record
         self.meter = MeterBuffer(window_size=exp.print_interval)
-        self.file_name = os.path.join(exp.output_dir, exp.exp_name)
+        self.file_name = os.path.join(exp.output_dir, args.experiment_name)
 
         if self.rank == 0:
             os.makedirs(self.file_name, exist_ok=True)
@@ -87,22 +77,17 @@ class PretrainTrainer:
     def train_one_iter(self):
         iter_start_time = time.time()
 
-        # Get data
-        inps, _ = self.prefetcher.next()  # Targets are ignored
+        # Unpack data, ignoring targets
+        inps, _ = self.prefetcher.next()
         inps = inps.to(self.data_type)
-        # Preprocess for multi-scale training
         inps, _ = self.exp.preprocess(inps, None, self.input_size)
         data_end_time = time.time()
 
-        # Forward pass with Automatic Mixed Precision
+        # Unsupervised forward and loss calculation
         with torch.cuda.amp.autocast(enabled=self.amp_training):
             reconstructed = self.model(inps)
             loss = self.criterion(reconstructed, inps)
 
-        # Create an outputs dict for the logger
-        outputs = {"total_loss": loss}
-
-        # Backward pass
         self.optimizer.zero_grad()
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
@@ -120,7 +105,7 @@ class PretrainTrainer:
             iter_time=iter_end_time - iter_start_time,
             data_time=data_end_time - iter_start_time,
             lr=lr,
-            **outputs,
+            total_loss=loss, # Log the reconstruction loss
         )
 
     def before_train(self):
@@ -130,12 +115,11 @@ class PretrainTrainer:
         # model related init
         torch.cuda.set_device(self.local_rank)
         model = self.exp.get_model()
+        logger.info(f"Model Summary: {get_model_info(model, self.exp.input_size)}")
         model.to(self.device)
 
         # solver related init
         self.optimizer = self.exp.get_optimizer(self.args.batch_size)
-
-        # Loss function
         self.criterion = nn.MSELoss()
 
         # resume training
@@ -161,33 +145,34 @@ class PretrainTrainer:
 
         self.model = model
 
+        # Setup loggers
         if self.rank == 0:
             if self.args.logger == "tensorboard":
-                self.tblogger = SummaryWriter(
-                    os.path.join(self.file_name, "tensorboard")
-                )
+                self.tblogger = SummaryWriter(os.path.join(self.file_name, "tensorboard"))
             elif self.args.logger == "wandb":
                 self.wandb_logger = WandbLogger.initialize_wandb_logger(
-                    self.args, self.exp, None
+                    self.args, self.exp, self.train_loader.dataset
                 )
             else:
                 raise ValueError("logger must be either 'tensorboard' or 'wandb'")
 
         logger.info("Pre-training start...")
-        logger.info(f"\n{model}")
 
     def after_train(self):
-        logger.success("Pre-training of experiment is done.")
-        # Save final backbone weights after training is complete
+        logger.info("Pre-training of experiment is done.")
         self.save_backbone()
 
     def before_epoch(self):
-        logger.info(f"---> start pre-train epoch{self.epoch + 1}")
+        # This hook is for supervised training (mosaic/L1 loss), so we just log the epoch
+        logger.info(f"---> start pre-train epoch {self.epoch + 1}")
 
     def after_epoch(self):
         self.save_ckpt(ckpt_name="latest")
-        if self.save_history_ckpt:
-            self.save_ckpt(f"epoch_{self.epoch + 1}")
+
+        # Use eval_interval to control how often history checkpoints are saved
+        if (self.epoch + 1) % self.exp.eval_interval == 0:
+            if self.save_history_ckpt:
+                self.save_ckpt(f"epoch_{self.epoch + 1}")
 
     def before_iter(self):
         pass
@@ -200,28 +185,18 @@ class PretrainTrainer:
 
             progress_str = f"epoch: {self.epoch + 1}/{self.max_epoch}, iter: {self.iter + 1}/{self.max_iter}"
             loss_meter = self.meter.get_filtered_meter("loss")
-            loss_str = ", ".join(
-                [f"{k}: {v.latest:.4f}" for k, v in loss_meter.items()]
-            )
+            loss_str = ", ".join([f"{k}: {v.latest:.4f}" for k, v in loss_meter.items()])
             time_str = f"iter_time: {self.meter['iter_time'].avg:.3f}s, data_time: {self.meter['data_time'].avg:.3f}s"
             mem_str = f"gpu mem: {gpu_mem_usage():.0f}Mb"
 
-            logger.info(
-                f"{progress_str}, {mem_str}, {time_str}, {loss_str}, lr: {self.meter['lr'].latest:.6f}, size: {self.input_size[0]}, {eta_str}"
-            )
+            logger.info(f"{progress_str}, {mem_str}, {time_str}, {loss_str}, lr: {self.meter['lr'].latest:.6f}, size: {self.input_size[0]}, {eta_str}")
 
             if self.rank == 0 and self.args.logger == "tensorboard":
-                self.tblogger.add_scalar(
-                    "pretrain/lr", self.meter["lr"].latest, self.progress_in_iter
-                )
+                self.tblogger.add_scalar("pretrain/lr", self.meter["lr"].latest, self.progress_in_iter)
                 for k, v in loss_meter.items():
-                    self.tblogger.add_scalar(
-                        f"pretrain/{k}", v.latest, self.progress_in_iter
-                    )
-
+                    self.tblogger.add_scalar(f"pretrain/{k}", v.latest, self.progress_in_iter)
             self.meter.clear_meters()
 
-        # random resizing
         if (self.progress_in_iter + 1) % 10 == 0:
             self.input_size = self.exp.random_resize(
                 self.train_loader, self.epoch, self.rank, self.is_distributed
@@ -234,22 +209,17 @@ class PretrainTrainer:
     def resume_train(self, model):
         if self.args.resume:
             logger.info("resume training")
-            ckpt_file = self.args.ckpt or os.path.join(
-                self.file_name, "latest_ckpt.pth"
-            )
-
+            ckpt_file = self.args.ckpt or os.path.join(self.file_name, "latest_ckpt.pth")
+            
             if os.path.isfile(ckpt_file):
                 ckpt = torch.load(ckpt_file, map_location=self.device)
                 model.load_state_dict(ckpt["model"])
                 self.optimizer.load_state_dict(ckpt["optimizer"])
-                self.start_epoch = ckpt.get("start_epoch", 0)
-                logger.info(
-                    f"loaded checkpoint '{ckpt_file}' (epoch {self.start_epoch})"
-                )
+                start_epoch = ckpt.get("start_epoch", 0)
+                self.start_epoch = start_epoch
+                logger.info(f"loaded checkpoint '{ckpt_file}' (epoch {self.start_epoch})")
             else:
-                logger.warning(
-                    f"No checkpoint found at {ckpt_file}, starting from scratch."
-                )
+                logger.warning(f"No checkpoint found at {ckpt_file}, starting from scratch.")
                 self.start_epoch = 0
         else:
             self.start_epoch = 0
@@ -271,6 +241,6 @@ class PretrainTrainer:
             model_to_save = self.ema_model.ema if self.use_model_ema else self.model
             if is_parallel(model_to_save):
                 model_to_save = model_to_save.module
-
+            
             torch.save(model_to_save.encoder.state_dict(), save_path)
             logger.success(f"Final pre-trained backbone weights saved to {save_path}")

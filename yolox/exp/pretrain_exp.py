@@ -1,9 +1,11 @@
-
 # yolox/exp/pretrain_exp.py
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader as torchDataLoader, BatchSampler as torchBatchSampler
+from torch.utils.data import (
+    DataLoader as torchDataLoader,
+    BatchSampler as torchBatchSampler,
+)
 from torch.utils.data.dataloader import default_collate
 from torchvision.datasets import ImageFolder
 import random
@@ -13,16 +15,26 @@ from .yolox_base import Exp
 from yolox.models import Autoencoder
 from yolox.data import PretrainTransform, InfiniteSampler, DataLoader
 
+
 def pretrain_collate_fn(batch):
     images, labels = default_collate(batch)
     return images, labels, None, None
 
+
 class PretrainExp(Exp):
     def __init__(self):
         super().__init__()
+        # --- Model Config ---
         self.depth = 0.33
         self.width = 0.50
+
+        # --- Dataloader Config ---
         self.input_size = (256, 256)
+        self.test_size = self.input_size
+        self.multiscale_range = 5
+        self.data_dir = "data/unlabeled"
+
+        # --- Transform Config ---
         self.multiscale_range = 5
         self.data_dir = "data/unlabeled"
         self.degrees = 10.0
@@ -31,7 +43,11 @@ class PretrainExp(Exp):
         self.shear = 2.0
         self.hsv_prob = 1.0
         self.flip_prob = 0.5
+
+        # --- Training Config ---
         self.max_epoch = 100
+        # Add eval_interval to control history checkpoint saving frequency
+        self.eval_interval = 10
         self.exp_name = "backbone_pretrain"
         self.output_weights_path = "pretrained_backbone.pth"
         self.ema = True
@@ -40,18 +56,26 @@ class PretrainExp(Exp):
         self.model = Autoencoder(dep_mul=self.depth, wid_mul=self.width, act=self.act)
         return self.model
 
-    def get_data_loader(self, batch_size, is_distributed, no_aug=False, cache_img: str = None):
+    def get_data_loader(
+        self, batch_size, is_distributed, no_aug=False, cache_img: str = None
+    ):
         if cache_img is not None and cache_img != "ram":
-             logger.warning("ImageFolder dataset does not support disk caching. Caching is disabled.")
-             cache_img = None
-             
+            logger.warning(
+                "ImageFolder dataset does not support disk caching. Caching is disabled."
+            )
+            cache_img = None
+
         # if cache is True, we will create self.dataset before launch
         if self.dataset is None:
-            self.dataset = self.get_dataset(cache=cache_img is not None, cache_type=cache_img)
-        
+            self.dataset = self.get_dataset(
+                cache=cache_img is not None, cache_type=cache_img
+            )
+
         sampler = InfiniteSampler(len(self.dataset), seed=self.seed if self.seed else 0)
-        batch_sampler = torchBatchSampler(sampler=sampler, batch_size=batch_size, drop_last=False)
-        
+        batch_sampler = torchBatchSampler(
+            sampler=sampler, batch_size=batch_size, drop_last=False
+        )
+
         dataloader_kwargs = {"num_workers": self.data_num_workers, "pin_memory": True}
         dataloader_kwargs["batch_sampler"] = batch_sampler
         dataloader_kwargs["collate_fn"] = pretrain_collate_fn
@@ -64,25 +88,33 @@ class PretrainExp(Exp):
         Updated to accept cache arguments for compatibility with the training script.
         """
         if cache:
-             logger.info("Caching for ImageFolder is not implemented. Images will be loaded from disk directly.")
+            logger.info(
+                "Caching for ImageFolder is not implemented. Images will be loaded from disk directly."
+            )
 
         transform = PretrainTransform(
-            input_size=self.input_size, degrees=self.degrees, translate=self.translate,
-            scales=self.mosaic_scale, shear=self.shear, flip_prob=self.flip_prob, hsv_prob=self.hsv_prob
+            input_size=self.input_size,
+            degrees=self.degrees,
+            translate=self.translate,
+            scales=self.mosaic_scale,
+            shear=self.shear,
+            flip_prob=self.flip_prob,
+            hsv_prob=self.hsv_prob,
         )
         return ImageFolder(self.data_dir, transform=transform)
-    
+
     def get_trainer(self, args):
         from yolox.core.pretrain_trainer import PretrainTrainer
+
         trainer = PretrainTrainer(self, args)
         return trainer
-        
+
     def random_resize(self, data_loader, epoch, rank, is_distributed):
         tensor = torch.LongTensor(2).cuda()
 
         if rank == 0:
             size_factor = self.input_size[1] * 1.0 / self.input_size[0]
-            if not hasattr(self, 'random_size'):
+            if not hasattr(self, "random_size"):
                 min_size = int(self.input_size[0] / 32) - self.multiscale_range
                 max_size = int(self.input_size[0] / 32) + self.multiscale_range
                 self.random_size = (min_size, max_size)
