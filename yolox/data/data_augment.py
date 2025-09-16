@@ -241,3 +241,52 @@ class ValTransform:
             img -= np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
             img /= np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
         return img, np.zeros((1, 5))
+
+class PretrainTransform:
+    """
+    Applies YOLOX-style image augmentations for the unsupervised pre-training task.
+    """
+    def __init__(
+        self,
+        input_size,
+        degrees=10.0,
+        translate=0.1,
+        scales=(0.1, 2),
+        shear=2.0,
+        flip_prob=0.5,
+        hsv_prob=1.0,
+    ):
+        self.input_size = (input_size[0], input_size[1])
+        self.degrees = degrees
+        self.translate = translate
+        self.scales = scales
+        self.shear = shear
+        self.flip_prob = flip_prob
+        self.hsv_prob = hsv_prob
+
+    def __call__(self, pil_image):
+        img = np.array(pil_image)
+        if len(img.shape) == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        else:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+        img, _ = random_affine(
+            img,
+            targets=(),
+            target_size=self.input_size,
+            degrees=self.degrees,
+            translate=self.translate,
+            scales=self.scales,
+            shear=self.shear,
+        )
+
+        if np.random.uniform(0, 1) < self.hsv_prob:
+            augment_hsv(img)
+
+        img, _ = _mirror(img, np.empty((0, 4)), self.flip_prob)
+
+        img, _ = preproc(img, self.input_size)
+
+        return img
+
