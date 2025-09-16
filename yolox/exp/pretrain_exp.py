@@ -7,85 +7,65 @@ from torch.utils.data import DataLoader as torchDataLoader, BatchSampler as torc
 from torch.utils.data.dataloader import default_collate
 from torchvision.datasets import ImageFolder
 import random
+from loguru import logger
 
-# YOLOX imports
 from .yolox_base import Exp
 from yolox.models import Autoencoder
 from yolox.data import PretrainTransform, InfiniteSampler, DataLoader
 
-# Custom collate function to make ImageFolder compatible with DataPrefetcher
 def pretrain_collate_fn(batch):
-    """
-    Collates a batch from ImageFolder and pads the output to four items.
-    This prevents an unpacking error in the DataPrefetcher, which expects
-    (input, target, img_info, img_id).
-    """
-    # The default collate function stacks images and labels into tensors
     images, labels = default_collate(batch)
-    # Return a 4-tuple to match the prefetcher's expected output format
     return images, labels, None, None
-
 
 class PretrainExp(Exp):
     def __init__(self):
         super().__init__()
-        # --- Model Config ---
         self.depth = 0.33
         self.width = 0.50
-        
-        # --- Dataloader Config ---
         self.input_size = (256, 256)
         self.multiscale_range = 5
         self.data_dir = "data/unlabeled"
-
-        # --- Transform Config ---
         self.degrees = 10.0
         self.translate = 0.1
         self.mosaic_scale = (0.5, 1.5)
         self.shear = 2.0
         self.hsv_prob = 1.0
         self.flip_prob = 0.5
-        
-        # --- Training Config ---
         self.max_epoch = 100
         self.exp_name = "backbone_pretrain"
         self.output_weights_path = "pretrained_backbone.pth"
         self.ema = True
-        
+
     def get_model(self):
         self.model = Autoencoder(dep_mul=self.depth, wid_mul=self.width, act=self.act)
         return self.model
 
     def get_data_loader(self, batch_size, is_distributed, no_aug=False, cache_img: str = None):
-        """
-        Updated to be fully compatible with the YOLOX data loading pipeline.
-        """
-        dataset = self.get_dataset()
-
-        # Use InfiniteSampler for endless stream of training data, as in standard YOLOX training
-        sampler = InfiniteSampler(len(dataset), seed=self.seed if self.seed else 0)
-
-        # Use a standard torch BatchSampler since mosaic is not used for pre-training
-        batch_sampler = torchBatchSampler(
-            sampler=sampler,
-            batch_size=batch_size,
-            drop_last=False
-        )
+        if cache_img is not None and cache_img != "ram":
+             logger.warning("ImageFolder dataset does not support disk caching. Caching is disabled.")
+             cache_img = None
+             
+        # if cache is True, we will create self.dataset before launch
+        if self.dataset is None:
+            self.dataset = self.get_dataset(cache=cache_img is not None, cache_type=cache_img)
+        
+        sampler = InfiniteSampler(len(self.dataset), seed=self.seed if self.seed else 0)
+        batch_sampler = torchBatchSampler(sampler=sampler, batch_size=batch_size, drop_last=False)
         
         dataloader_kwargs = {"num_workers": self.data_num_workers, "pin_memory": True}
         dataloader_kwargs["batch_sampler"] = batch_sampler
-        # Use our custom collate function to format the batch correctly for the prefetcher
         dataloader_kwargs["collate_fn"] = pretrain_collate_fn
 
-        # Use the custom YOLOX DataLoader
-        train_loader = DataLoader(dataset, **dataloader_kwargs)
-        
+        train_loader = DataLoader(self.dataset, **dataloader_kwargs)
         return train_loader
 
-    def get_dataset(self):
+    def get_dataset(self, cache: bool = False, cache_type: str = "ram"):
         """
-        This helper function is called by get_data_loader.
+        Updated to accept cache arguments for compatibility with the training script.
         """
+        if cache:
+             logger.info("Caching for ImageFolder is not implemented. Images will be loaded from disk directly.")
+
         transform = PretrainTransform(
             input_size=self.input_size, degrees=self.degrees, translate=self.translate,
             scales=self.mosaic_scale, shear=self.shear, flip_prob=self.flip_prob, hsv_prob=self.hsv_prob
