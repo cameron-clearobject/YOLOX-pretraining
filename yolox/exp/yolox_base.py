@@ -3,6 +3,9 @@
 
 import os
 import random
+from loguru import logger
+from typing import Optional # <-- Add this import
+
 
 import torch
 import torch.distributed as dist
@@ -83,6 +86,13 @@ class Exp(BaseExp):
         # apply EMA during training
         self.ema = True
 
+        # --- Optional fine-tuning attributes ---
+        # Path to pre-trained backbone weights. If set, these are loaded before any other checkpoint.
+        self.pretrain_weights: Optional[str] = None
+        # Number of epochs to freeze the backbone. If > 0, the FinetuneTrainer will be used.
+        self.freeze_epochs: int = 0
+
+
         # weight decay of optimizer
         self.weight_decay = 5e-4
         # momentum of optimizer
@@ -108,7 +118,27 @@ class Exp(BaseExp):
         # nms threshold
         self.nmsthre = 0.65
 
-    def get_model(self):
+    def __init__(self) -> None:
+        super().__init__()
+
+        # ---------------- model config ---------------- #
+        self.num_classes: int = 80
+        self.depth: float = 1.00
+        self.width: float = 1.00
+        self.act: str = "silu"
+
+        # --- New optional fine-tuning attributes ---
+        # Path to pre-trained backbone weights. If set, these are loaded before any other checkpoint.
+        self.pretrain_weights: Optional[str] = None
+        # Number of epochs to freeze the backbone. If > 0, the FinetuneTrainer will be used.
+        self.freeze_epochs: int = 0
+        
+        # ... (all other attributes from the original file remain the same) ...
+        self.data_num_workers: int = 4
+        self.input_size = (640, 640)
+        # ...
+
+    def get_model(self) -> nn.Module:
         from yolox.models import YOLOX, YOLOPAFPN, YOLOXHead
 
         def init_yolo(M):
@@ -126,7 +156,31 @@ class Exp(BaseExp):
         self.model.apply(init_yolo)
         self.model.head.initialize_biases(1e-2)
         self.model.train()
+
+        # --- New Logic: Load pre-trained backbone if specified ---
+        if self.pretrain_weights:
+            logger.info(f"Loading pre-trained backbone weights from {self.pretrain_weights}")
+            try:
+                ckpt = torch.load(self.pretrain_weights, map_location="cpu")
+                self.model.backbone.backbone.load_state_dict(ckpt, strict=False)
+                logger.success("Pre-trained backbone weights loaded successfully!")
+            except Exception as e:
+                logger.warning(f"Could not load pre-trained backbone weights: {e}")
+
         return self.model
+
+    def get_trainer(self, args):
+        # --- New Logic: Select trainer based on freeze_epochs ---
+        if self.freeze_epochs > 0:
+            logger.info(f"Freeze training enabled for {self.freeze_epochs} epochs. Using FinetuneTrainer.")
+            from yolox.core.finetune_trainer import FinetuneTrainer
+            trainer = FinetuneTrainer(self, args)
+        else:
+            logger.info("Standard training. Using standard Trainer.")
+            from yolox.core.trainer import Trainer
+            trainer = Trainer(self, args)
+        return trainer
+
 
     def get_dataset(self, cache: bool = False, cache_type: str = "ram"):
         """
@@ -343,11 +397,6 @@ class Exp(BaseExp):
             testdev=testdev,
         )
 
-    def get_trainer(self, args):
-        from yolox.core import Trainer
-        trainer = Trainer(self, args)
-        # NOTE: trainer shouldn't be an attribute of exp object
-        return trainer
 
     def eval(self, model, evaluator, is_distributed, half=False, return_outputs=False):
         return evaluator.evaluate(model, is_distributed, half, return_outputs=return_outputs)
