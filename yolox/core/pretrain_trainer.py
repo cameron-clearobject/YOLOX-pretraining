@@ -1,6 +1,7 @@
 # yolox/core/pretrain_trainer.py
 
 import os
+import time
 from loguru import logger
 
 import torch
@@ -54,15 +55,14 @@ class PretrainTrainer(Trainer):
         logger.info(f"---> start pre-train epoch {self.epoch + 1}")
 
     def train_one_iter(self) -> None:
-        # This is the core logic for one iteration of autoencoder training.
-        iter_start_time = torch.cuda.Event(enable_timing=True)
-        iter_end_time = torch.cuda.Event(enable_timing=True)
-        iter_start_time.record()
+        iter_start_time = time.time()
 
         # Unpack data, ignoring targets
         inps, _ = self.prefetcher.next()
         inps = inps.to(self.data_type)
         inps, _ = self.exp.preprocess(inps, None, self.input_size)
+
+        data_end_time = time.time()
 
         # Unsupervised forward and loss calculation
         with torch.cuda.amp.autocast(enabled=self.amp_training):
@@ -81,8 +81,7 @@ class PretrainTrainer(Trainer):
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
 
-        iter_end_time.record()
-        torch.cuda.synchronize()
+        iter_end_time = time.time()
         self.meter.update(
             iter_time=iter_end_time.elapsed_time(iter_start_time) / 1000.0,
             lr=lr,
@@ -194,7 +193,6 @@ class PretrainTrainer(Trainer):
             self.ema_model.ema if self.use_model_ema else self.model,
             self.evaluator,
             self.is_distributed,
-            half=self.amp_training,
         )
 
         # Check if the current model is the best
