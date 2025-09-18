@@ -13,6 +13,7 @@ from yolox.utils import (
     is_parallel,
     save_checkpoint,
     WandbLogger,
+    load_ckpt,
 )
 
 
@@ -49,10 +50,8 @@ class PretrainTrainer(Trainer):
             self.args.batch_size, self.is_distributed
         )
 
-
     def before_epoch(self) -> None:
         logger.info(f"---> start pre-train epoch {self.epoch + 1}")
-
 
     def train_one_iter(self) -> None:
         # This is the core logic for one iteration of autoencoder training.
@@ -90,19 +89,101 @@ class PretrainTrainer(Trainer):
             total_loss=loss,  # Log the reconstruction loss
         )
 
-
     def after_epoch(self) -> None:
         self.save_ckpt(ckpt_name="latest")
 
         if (self.epoch + 1) % self.exp.eval_interval == 0:
             self.evaluate_and_save_model()
 
-
     def after_train(self) -> None:
         logger.info(
             f"Pre-training of experiment is done. Best validation loss was {self.best_val_loss:.4f}"
         )
         self.save_best_backbone()
+
+    def resume_train(self, model: nn.Module) -> nn.Module:
+        """
+        Overrides the resume logic for the pre-training task.
+        Handles three scenarios:
+        1. --resume: Resumes a previous pre-training run (loads model, optimizer, epoch).
+        2. --ckpt yolox*.pth: Initializes the encoder from a pre-trained YOLOX model.
+        3. --ckpt other.pth: Loads weights from a previous autoencoder run.
+        """
+        ckpt_file = self.args.ckpt
+
+        # --- CASE 1: Resume a previous pre-training session ---
+        if self.args.resume:
+            logger.info("Resuming pre-training session...")
+            if ckpt_file is None:
+                ckpt_file = os.path.join(self.file_name, "latest_ckpt.pth")
+
+            if os.path.isfile(ckpt_file):
+                ckpt = torch.load(ckpt_file, map_location=self.device)
+                model.load_state_dict(ckpt["model"])
+                self.optimizer.load_state_dict(ckpt["optimizer"])
+                self.best_val_loss = ckpt.get("best_val_loss", float("inf"))
+
+                start_epoch = (
+                    self.args.start_epoch - 1
+                    if self.args.start_epoch is not None
+                    else ckpt["start_epoch"]
+                )
+                self.start_epoch = start_epoch
+                logger.info(
+                    f"Loaded pre-training checkpoint '{ckpt_file}' (resuming at epoch {self.start_epoch})"
+                )
+            else:
+                logger.warning(
+                    f"Resume checkpoint not found at {ckpt_file}. Starting from scratch."
+                )
+                self.start_epoch = 0
+
+        # --- CASE 2 & 3: Load weights from a checkpoint without resuming state ---
+        elif ckpt_file is not None:
+            # --- CASE 2: Initialize encoder from a standard YOLOX model ---
+            if os.path.basename(ckpt_file).startswith("yolox"):
+                logger.info(
+                    f"Initializing encoder from pre-trained YOLOX model: {ckpt_file}"
+                )
+
+                yolox_ckpt = torch.load(ckpt_file, map_location=self.device)
+                yolox_state_dict = yolox_ckpt.get("model", yolox_ckpt)
+
+                # Extract weights with the prefix 'backbone.backbone.'
+                prefix = "backbone.backbone."
+                encoder_state_dict = {
+                    k[len(prefix) :]: v
+                    for k, v in yolox_state_dict.items()
+                    if k.startswith(prefix)
+                }
+
+                if not encoder_state_dict:
+                    logger.error(
+                        "No backbone weights found in the provided YOLOX checkpoint. Starting from scratch."
+                    )
+                else:
+                    model.encoder.load_state_dict(encoder_state_dict, strict=False)
+                    logger.success(
+                        "Successfully loaded backbone weights into the autoencoder's encoder. Decoder is fresh."
+                    )
+
+                self.start_epoch = 0
+
+            # --- CASE 3: Load weights from a previous autoencoder checkpoint ---
+            else:
+                logger.info(
+                    f"Loading autoencoder weights for transfer learning from: {ckpt_file}"
+                )
+                ckpt = torch.load(ckpt_file, map_location=self.device)
+                model_state = ckpt.get("model", ckpt)
+                model = load_ckpt(model, model_state)
+                self.start_epoch = 0
+
+        # --- Default case: No resume, no checkpoint ---
+        else:
+            self.start_epoch = 0
+
+        return model
 
     def evaluate_and_save_model(self) -> None:
         if self.evaluator is None:
