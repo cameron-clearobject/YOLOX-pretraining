@@ -83,7 +83,8 @@ class PretrainTrainer(Trainer):
 
         iter_end_time = time.time()
         self.meter.update(
-            iter_time=iter_end_time.elapsed_time(iter_start_time) / 1000.0,
+            iter_time=iter_end_time - iter_start_time,
+            data_time=data_end_time - iter_start_time,
             lr=lr,
             total_loss=loss,  # Log the reconstruction loss
         )
