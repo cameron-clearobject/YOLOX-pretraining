@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # Copyright (c) Megvii Inc. All rights reserved.
 
@@ -118,25 +119,6 @@ class Exp(BaseExp):
         # nms threshold
         self.nmsthre = 0.65
 
-    def __init__(self) -> None:
-        super().__init__()
-
-        # ---------------- model config ---------------- #
-        self.num_classes: int = 80
-        self.depth: float = 1.00
-        self.width: float = 1.00
-        self.act: str = "silu"
-
-        # --- New optional fine-tuning attributes ---
-        # Path to pre-trained backbone weights. If set, these are loaded before any other checkpoint.
-        self.pretrain_weights: Optional[str] = None
-        # Number of epochs to freeze the backbone. If > 0, the FinetuneTrainer will be used.
-        self.freeze_epochs: int = 0
-        
-        # ... (all other attributes from the original file remain the same) ...
-        self.data_num_workers: int = 4
-        self.input_size = (640, 640)
-        # ...
 
     def get_model(self) -> nn.Module:
         from yolox.models import YOLOX, YOLOPAFPN, YOLOXHead

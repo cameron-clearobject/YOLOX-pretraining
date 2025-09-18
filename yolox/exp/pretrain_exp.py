@@ -1,3 +1,4 @@
+
 # yolox/exp/pretrain_exp.py
 
 import torch
@@ -22,21 +23,22 @@ def pretrain_collate_fn(batch):
 
 
 class PretrainExp(Exp):
+
     def __init__(self):
         super().__init__()
         # --- Model Config ---
         self.depth = 0.33
         self.width = 0.50
+        self.act = "silu"
 
         # --- Dataloader Config ---
         self.input_size = (256, 256)
         self.test_size = self.input_size
         self.multiscale_range = 5
         self.data_dir = "data/unlabeled"
+        self.data_num_workers = 4
 
         # --- Transform Config ---
-        self.multiscale_range = 5
-        self.data_dir = "data/unlabeled"
         self.degrees = 10.0
         self.translate = 0.1
         self.mosaic_scale = (0.5, 1.5)
@@ -46,11 +48,15 @@ class PretrainExp(Exp):
 
         # --- Training Config ---
         self.max_epoch = 100
-        # Add eval_interval to control history checkpoint saving frequency
+        self.print_interval = 10
         self.eval_interval = 10
+        self.ema = True
+        # This attribute was missing, causing the error
+        self.save_history_ckpt = True
+        
         self.exp_name = "backbone_pretrain"
         self.output_weights_path = "pretrained_backbone.pth"
-        self.ema = True
+
 
     def get_model(self):
         self.model = Autoencoder(dep_mul=self.depth, wid_mul=self.width, act=self.act)
