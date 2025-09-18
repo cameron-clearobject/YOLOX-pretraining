@@ -1,4 +1,3 @@
-
 # yolox/core/pretrain_trainer.py
 
 import os
@@ -32,6 +31,7 @@ class PretrainTrainer(Trainer):
         # Pre-training does not have an AP metric.
         if hasattr(self, "best_ap"):
             del self.best_ap
+        self.best_val_loss = float("inf")
         # Set the loss function for autoencoder reconstruction
         self.criterion = nn.MSELoss()
 
@@ -45,13 +45,9 @@ class PretrainTrainer(Trainer):
         super().before_train()
 
         # Overwrite the evaluator setup from the parent class
-        self.evaluator = None
-
-        # Modify loggers setup to not use evaluator
-        if self.rank == 0 and self.args.logger == "wandb":
-            self.wandb_logger = WandbLogger.initialize_wandb_logger(
-                self.args, self.exp, self.train_loader.dataset
-            )
+        self.evaluator = self.exp.get_evaluator(
+            self.args.batch_size, self.is_distributed
+        )
 
     def train_one_iter(self) -> None:
         # This is the core logic for one iteration of autoencoder training.
@@ -90,34 +86,44 @@ class PretrainTrainer(Trainer):
         )
 
     def after_epoch(self) -> None:
-        # Override to prevent evaluation and implement pre-training checkpointing.
         self.save_ckpt(ckpt_name="latest")
 
         if (self.epoch + 1) % self.exp.eval_interval == 0:
-            if self.save_history_ckpt:
-                self.save_ckpt(ckpt_name=f"epoch_{self.epoch + 1}")
+            self.evaluate_and_save_model()
 
-    def save_ckpt(
-        self, ckpt_name: str, update_best_ckpt: bool = False, ap: Optional[float] = None
-    ) -> None:
-        # Override to remove evaluation metrics (AP) from the checkpoint state.
-        if self.rank == 0:
-            save_model = self.ema_model.ema if self.use_model_ema else self.model
-            ckpt_state = {
-                "start_epoch": self.epoch + 1,
-                "model": save_model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-            }
-            save_checkpoint(
-                ckpt_state,
-                False,  # update_best_ckpt is always False for pre-training
-                self.file_name,
-                ckpt_name,
-            )
 
     def after_train(self) -> None:
-        logger.info("Pre-training of experiment is done.")
-        self.save_backbone()
+        logger.info(
+            f"Pre-training of experiment is done. Best validation loss was {self.best_val_loss:.4f}"
+        )
+        self.save_best_backbone()
+
+    def evaluate_and_save_model(self) -> None:
+        if self.evaluator is None:
+            return
+
+        # Run evaluation to get the average validation loss
+        val_loss = self.exp.eval(
+            self.ema_model.ema if self.use_model_ema else self.model,
+            self.evaluator,
+            self.is_distributed,
+            half=self.amp_training,
+        )
+
+        # Check if the current model is the best
+        update_best_ckpt = val_loss < self.best_val_loss
+        self.best_val_loss = min(self.best_val_loss, val_loss)
+
+        if self.rank == 0:
+            logger.info(
+                f"Val Loss: {val_loss:.4f}, Best Val Loss: {self.best_val_loss:.4f}"
+            )
+            if self.args.logger == "tensorboard":
+                self.tblogger.add_scalar("pretrain/val_loss", val_loss, self.epoch + 1)
+
+        self.save_ckpt("last_epoch", update_best_ckpt, val_loss=val_loss)
+        if self.save_history_ckpt:
+            self.save_ckpt(f"epoch_{self.epoch + 1}", val_loss=val_loss)
 
     def save_best_backbone(self) -> None:
         """
@@ -127,20 +133,24 @@ class PretrainTrainer(Trainer):
         """
         if self.rank == 0:
             best_ckpt_path = os.path.join(self.file_name, "best_ckpt.pth")
-            
+
             source_model_state_dict = None
             source_name = ""
 
             # **Priority 1: Try to load the best checkpoint**
             if os.path.exists(best_ckpt_path):
                 try:
-                    logger.info(f"Loading best checkpoint from '{best_ckpt_path}' to extract backbone.")
+                    logger.info(
+                        f"Loading best checkpoint from '{best_ckpt_path}' to extract backbone."
+                    )
                     ckpt = torch.load(best_ckpt_path, map_location="cpu")
                     source_model_state_dict = ckpt.get("model", {})
                     source_name = "best checkpoint"
                 except Exception as e:
-                    logger.warning(f"Failed to load best checkpoint: {e}. Falling back to final model.")
-            
+                    logger.warning(
+                        f"Failed to load best checkpoint: {e}. Falling back to final model."
+                    )
+
             # **Priority 2: Fallback to the final epoch's model**
             if source_model_state_dict is None:
                 logger.warning("Could not find 'best_ckpt.pth' or it failed to load.")
@@ -153,7 +163,7 @@ class PretrainTrainer(Trainer):
                     logger.info("Falling back to the final epoch's standard model.")
                     source_model = self.model
                     source_name = "final standard model"
-                
+
                 # Handle DDP wrapper if training was distributed
                 if is_parallel(source_model):
                     source_model = source_model.module
@@ -162,21 +172,41 @@ class PretrainTrainer(Trainer):
             # **Extract and save the backbone weights from the chosen source**
             prefix = "backbone.backbone."
             backbone_state_dict = {
-                k[len(prefix):]: v
+                k[len(prefix) :]: v
                 for k, v in source_model_state_dict.items()
                 if k.startswith(prefix)
             }
 
             if not backbone_state_dict:
-                logger.warning(f"No backbone weights found in the {source_name}. Cannot save backbone.")
+                logger.warning(
+                    f"No backbone weights found in the {source_name}. Cannot save backbone."
+                )
                 return
 
             save_path = os.path.join(self.file_name, "best_backbone.pth")
             torch.save(backbone_state_dict, save_path)
-            logger.success(f"Successfully extracted backbone from {source_name} and saved to '{save_path}'")
+            logger.success(
+                f"Successfully extracted backbone from {source_name} and saved to '{save_path}'"
+            )
 
-
-
-
-
-
+    def save_ckpt(
+        self,
+        ckpt_name: str,
+        update_best_ckpt: bool = False,
+        val_loss: Optional[float] = None,
+    ) -> None:
+        # Override to save validation loss instead of AP
+        if self.rank == 0:
+            save_model = self.ema_model.ema if self.use_model_ema else self.model
+            ckpt_state = {
+                "start_epoch": self.epoch + 1,
+                "model": save_model.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+                "best_val_loss": self.best_val_loss,
+            }
+            save_checkpoint(
+                ckpt_state,
+                update_best_ckpt,  # This will save "best_ckpt.pth" if True
+                self.file_name,
+                ckpt_name,
+            )

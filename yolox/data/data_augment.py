@@ -290,3 +290,20 @@ class PretrainTransform:
 
         return img
 
+
+class PretrainValTransform:
+    """A deterministic transform for validation that uses preproc."""
+    def __init__(self, input_size: tuple):
+        # This is a simplified version of the official ValTransform
+        self.input_size = input_size
+        self.swap = (2, 0, 1)
+
+    def __call__(self, pil_image: "Image.Image") -> "np.ndarray":
+        import numpy as np
+        import cv2
+        from yolox.data.data_augment import preproc
+        
+        img_np = np.array(pil_image)
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) if len(img_np.shape) == 3 else cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        img_preprocessed, _ = preproc(img_bgr, self.input_size, self.swap)
+        return img_preprocessed
