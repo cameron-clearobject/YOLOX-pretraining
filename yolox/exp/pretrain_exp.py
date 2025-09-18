@@ -8,6 +8,7 @@ from torch.utils.data import (
     Dataset,
     SequentialSampler,
 )
+from torch.utils.data.dataloader import default_collate
 from torchvision.datasets import ImageFolder
 import random
 from loguru import logger
