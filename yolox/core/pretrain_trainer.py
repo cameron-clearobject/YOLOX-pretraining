@@ -49,6 +49,11 @@ class PretrainTrainer(Trainer):
             self.args.batch_size, self.is_distributed
         )
 
+
+    def before_epoch(self) -> None:
+        logger.info(f"---> start pre-train epoch {self.epoch + 1}")
+
+
     def train_one_iter(self) -> None:
         # This is the core logic for one iteration of autoencoder training.
         iter_start_time = torch.cuda.Event(enable_timing=True)
@@ -84,6 +89,7 @@ class PretrainTrainer(Trainer):
             lr=lr,
             total_loss=loss,  # Log the reconstruction loss
         )
+
 
     def after_epoch(self) -> None:
         self.save_ckpt(ckpt_name="latest")
