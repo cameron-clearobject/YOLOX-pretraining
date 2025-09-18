@@ -165,19 +165,31 @@ class PretrainExp(Exp):
     def get_eval_loader(
         self, batch_size: int, is_distributed: bool, **kwargs
     ) -> Optional[DataLoader]:
+        """
+        Updated to be more structurally consistent with get_data_loader.
+        """
         val_dataset = self.get_eval_dataset(**kwargs)
         if val_dataset is None:
             return None
 
         sampler = SequentialSampler(val_dataset)
+
+        batch_sampler = torchBatchSampler(
+            sampler=sampler,
+            batch_size=batch_size,
+            drop_last=False,
+        )
+
         dataloader_kwargs = {
             "num_workers": self.data_num_workers,
             "pin_memory": True,
-            "sampler": sampler,
-            "batch_size": batch_size,
+            "batch_sampler": batch_sampler,
             "collate_fn": pretrain_collate_fn,
         }
-        return torchDataLoader(val_dataset, **dataloader_kwargs)
+
+        val_loader = DataLoader(val_dataset, **dataloader_kwargs)
+
+        return val_loader
 
     def get_evaluator(
         self,
