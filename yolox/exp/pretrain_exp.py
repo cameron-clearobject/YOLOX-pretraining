@@ -23,6 +23,7 @@ from yolox.data import (
     DataLoader,
     ValTransform,
     PretrainValTransform,
+    DataPrefetcher,
 )
 from yolox.utils import wait_for_the_master
 from yolox.evaluators import ReconstructionEvaluator
@@ -197,11 +198,14 @@ class PretrainExp(Exp):
         is_distributed: bool,
         testdev: bool = False,
         legacy: bool = False,
-    ):
+    ) -> Optional[ReconstructionEvaluator]:
+        """
+        Updated to use the new self-contained ReconstructionEvaluator.
+        """
         val_loader = self.get_eval_loader(batch_size, is_distributed)
         if val_loader is None:
             return None
-        return ReconstructionEvaluator(dataloader=val_loader)
+        return ReconstructionEvaluator(dataloader=val_loader, img_size=self.test_size)
 
     def eval(
         self,
@@ -209,32 +213,13 @@ class PretrainExp(Exp):
         evaluator: ReconstructionEvaluator,
         is_distributed: bool,
         half: bool = False,
-        return_outputs: bool = False,
+        return_outputs: bool = False,  # This arg is kept for API consistency
     ) -> float:
         """
-        Runs the evaluation loop for the autoencoder, calculating reconstruction loss.
+        Delegates the evaluation loop to the evaluator object.
         """
         if evaluator is None:
             return float("inf")
 
-        val_loader = evaluator.dataloader
-        model.eval()
-        criterion = nn.MSELoss()
-        total_loss = 0.0
-        num_batches = 0
-
-        with torch.no_grad():
-            for inps, _ in val_loader:
-                inps = inps.cuda()
-                if half:
-                    inps = inps.half()
-
-                reconstructed = model(inps)
-                loss = criterion(reconstructed, inps)
-                total_loss += loss.item()
-                num_batches += 1
-
-        model.train()  # Set model back to training mode
-
-        avg_loss = total_loss / num_batches if num_batches > 0 else float("inf")
-        return avg_loss
+        # The evaluator now contains the full evaluation logic
+        return evaluator.evaluate(model, is_distributed, half)
