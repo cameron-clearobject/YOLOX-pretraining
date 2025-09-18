@@ -157,7 +157,7 @@ class Exp(BaseExp):
         self.model.head.initialize_biases(1e-2)
         self.model.train()
 
-        # --- New Logic: Load pre-trained backbone if specified ---
+        # --- Load pre-trained backbone if specified ---
         if self.pretrain_weights:
             logger.info(f"Loading pre-trained backbone weights from {self.pretrain_weights}")
             try:
@@ -170,7 +170,7 @@ class Exp(BaseExp):
         return self.model
 
     def get_trainer(self, args):
-        # --- New Logic: Select trainer based on freeze_epochs ---
+        # ---  Select trainer based on freeze_epochs ---
         if self.freeze_epochs > 0:
             logger.info(f"Freeze training enabled for {self.freeze_epochs} epochs. Using FinetuneTrainer.")
             from yolox.core.finetune_trainer import FinetuneTrainer
