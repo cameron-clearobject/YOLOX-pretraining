@@ -4,3 +4,4 @@
 from .base_exp import BaseExp
 from .build import get_exp
 from .yolox_base import Exp, check_exp_value
+from .yolox_conditional import Exp as CondExp
