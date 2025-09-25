@@ -1,3 +1,4 @@
+import os
 
 from .trainer import Trainer
 
@@ -13,7 +14,8 @@ class StackedTrainer(Trainer):
             super().resume_train(model)
         else:
             if self.args.ckpt is not None:
-                if self.args.ckpt[:6] == "yolox":
+                ckpt_file_name = os.path.basename(self.args.ckpt)
+                if ckpt_file_name[:5] == "yolox":
                     super().resume_train(model.original_model)
                 else:
                     super().resume_train(model)
