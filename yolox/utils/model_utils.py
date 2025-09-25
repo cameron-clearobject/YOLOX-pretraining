@@ -19,11 +19,11 @@ __all__ = [
 ]
 
 
-def get_model_info(model: nn.Module, tsize: Sequence[int]) -> str:
+def get_model_info(model: nn.Module, tsize: Sequence[int], input_channels: int = 3) -> str:
     from thop import profile
 
     stride = 64
-    img = torch.zeros((1, 3, stride, stride), device=next(model.parameters()).device)
+    img = torch.zeros((1, input_channels, stride, stride), device=next(model.parameters()).device)
     flops, params = profile(deepcopy(model), inputs=(img,), verbose=False)
     params /= 1e6
     flops /= 1e9

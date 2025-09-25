@@ -31,6 +31,8 @@ class Exp(BaseExp):
         # activation name. For example, if using "relu", then "silu" will be replaced to "relu".
         self.act = "silu"
 
+        self.input_channels: int = 3
+
         # ---------------- dataloader config ---------------- #
         # set worker to 4 for shorter dataloader init time
         # If your training process cost many memory, reduce this value.

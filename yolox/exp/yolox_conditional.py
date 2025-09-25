@@ -47,6 +47,7 @@ class Exp(MyExp):
         self.depth = 1.0
         self.width = 1.0
         self.exp_name = os.path.split(os.path.realpath(__file__))[1].split(".")[0]
+        self.input_channels = 6
 
         # --- Add path to your 'before' images dataset ---
         self.before_data_dir = None  # IMPORTANT: Set this path
