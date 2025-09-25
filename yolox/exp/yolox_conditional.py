@@ -11,6 +11,7 @@ from yolox.data import (
     ConditionalTrainTransform,
     ConditionalValTransform,
 )
+from yolox.core import StackedTrainer
 
 
 class ModelWrapper(nn.Module):
@@ -147,3 +148,7 @@ class Exp(MyExp):
             img_size=self.test_size,
             preproc=ConditionalValTransform(legacy=legacy),
         )
+
+    def get_trainer(self, args):
+        trainer = StackedTrainer(self, args)
+        return trainer
