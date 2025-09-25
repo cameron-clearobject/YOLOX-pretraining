@@ -1,5 +1,5 @@
 
-from yolox.core import Trainer
+from .trainer import Trainer
 
 class StackedTrainer(Trainer):
 
@@ -9,10 +9,14 @@ class StackedTrainer(Trainer):
 
     def resume_train(self, model):
 
-        # if ckpt_file starts with 'yolox', load model.original_model
-        if hasattr(model, 'original_model'):
-            super(StackedTrainer, self).resume_train(model.original_model)
+        if self.args.resume:
+            super().resume_train(model)
         else:
-            super(StackedTrainer, self).resume_train(model)
+            if self.args.ckpt is not None:
+                if self.args.ckpt[:6] == "yolox":
+                    super().resume_train(model.original_model)
+                else:
+                    super().resume_train(model)
+            self.start_epoch = 0
 
         return model

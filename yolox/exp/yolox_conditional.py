@@ -11,7 +11,6 @@ from yolox.data import (
     ConditionalTrainTransform,
     ConditionalValTransform,
 )
-from yolox.core import StackedTrainer
 
 
 class ModelWrapper(nn.Module):
@@ -30,6 +29,10 @@ class ModelWrapper(nn.Module):
             nn.LeakyReLU(0.1, inplace=True),
         )
         self.original_model = original_model
+
+        # alias original_model.backbone and original_model.head
+        self.backbone = original_model.backbone
+        self.head = original_model.head
 
     def forward(self, x, targets=None):
         x = self.input_layer(x)
@@ -150,5 +153,6 @@ class Exp(MyExp):
         )
 
     def get_trainer(self, args):
+        from yolox.core import StackedTrainer
         trainer = StackedTrainer(self, args)
         return trainer
