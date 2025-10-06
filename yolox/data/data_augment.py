@@ -30,11 +30,12 @@ from yolox.utils import xyxy2cxcywh
 
 #     cv2.cvtColor(img_hsv.astype(img.dtype), cv2.COLOR_HSV2BGR, dst=img)  # no return needed
 
+
 def augment_hsv(img, hgain=5, sgain=30, vgain=30):
     # Only apply to 3-channel images
     if img.shape[2] != 3:
         return
-    
+
     # ... rest of the function is unchanged
     hsv_augs = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain]
     hsv_augs *= np.random.randint(0, 2, 3)
@@ -48,7 +49,6 @@ def augment_hsv(img, hgain=5, sgain=30, vgain=30):
     cv2.cvtColor(img_hsv.astype(img.dtype), cv2.COLOR_HSV2BGR, dst=img)
 
 
-
 def get_aug_params(value, center=0):
     if isinstance(value, float):
         return random.uniform(center - value, center + value)
@@ -57,7 +57,9 @@ def get_aug_params(value, center=0):
     else:
         raise ValueError(
             "Affine params should be either a sequence containing two values\
-             or single float values. Got {}".format(value)
+             or single float values. Got {}".format(
+                value
+            )
         )
 
 
@@ -149,12 +151,14 @@ def apply_affine_to_bboxes(targets, target_size, M, scale):
 #     return img, targets
 
 
-# def _mirror(image, boxes, prob=0.5):
-#     _, width, _ = image.shape
-#     if random.random() < prob:
-#         image = image[:, ::-1]
-#         boxes[:, 0::2] = width - boxes[:, 2::-2]
-#     return image, boxes
+def _mirror(image, boxes, prob=0.5):
+    _, width, _ = image.shape
+    if random.random() < prob:
+        image = image[:, ::-1]
+        boxes[:, 0::2] = width - boxes[:, 2::-2]
+    return image, boxes
+
+
 def random_affine(
     img,
     targets=(),
@@ -175,12 +179,13 @@ def random_affine(
     return img, targets
 
 
-
 def preproc(img, input_size, swap=(2, 0, 1)):
     if len(img.shape) == 3:
         # Dynamically get the channel count from the input image
         num_channels = img.shape[2]
-        padded_img = np.ones((input_size[0], input_size[1], num_channels), dtype=np.uint8) * 114
+        padded_img = (
+            np.ones((input_size[0], input_size[1], num_channels), dtype=np.uint8) * 114
+        )
     else:
         padded_img = np.ones(input_size, dtype=np.uint8) * 114
 
@@ -200,6 +205,7 @@ def preproc(img, input_size, swap=(2, 0, 1)):
     padded_img = padded_img.transpose(swap)
     padded_img = np.ascontiguousarray(padded_img, dtype=np.float32)
     return padded_img, r
+
 
 # def preproc(img, input_size, swap=(2, 0, 1)):
 #     if len(img.shape) == 3:
@@ -304,10 +310,12 @@ class ValTransform:
             img /= np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
         return img, np.zeros((1, 5))
 
+
 class PretrainTransform:
     """
     Applies YOLOX-style image augmentations for the unsupervised pre-training task.
     """
+
     def __init__(
         self,
         input_size,
@@ -355,6 +363,7 @@ class PretrainTransform:
 
 class PretrainValTransform:
     """A deterministic transform for validation that uses preproc."""
+
     def __init__(self, input_size: tuple):
         # This is a simplified version of the official ValTransform
         self.input_size = input_size
@@ -364,8 +373,12 @@ class PretrainValTransform:
         import numpy as np
         import cv2
         from yolox.data.data_augment import preproc
-        
+
         img_np = np.array(pil_image)
-        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) if len(img_np.shape) == 3 else cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        img_bgr = (
+            cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            if len(img_np.shape) == 3
+            else cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        )
         img_preprocessed, _ = preproc(img_bgr, self.input_size, self.swap)
         return img_preprocessed
