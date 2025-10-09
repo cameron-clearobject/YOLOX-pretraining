@@ -13,7 +13,7 @@ from yolox.data import (
     ConditionalValTransform,
 )
 
-
+# Pre-conv custom model
 # class ModelWrapper(nn.Module):
 #     """
 #     A wrapper to adapt a standard YOLOX model for 6-channel input.
@@ -43,6 +43,87 @@ from yolox.data import (
 #             return self.original_model(x, targets)
 #         else:
 #             return self.original_model(x, None)
+
+# concat-embeddings custom model
+# class ModelWrapper(nn.Module):
+#     def __init__(self, modified_original_model):
+#         super().__init__()
+#         self.original_model = modified_original_model
+#         # The backbone is shared, but we will call it twice
+#         self.backbone = self.original_model.backbone
+#         # The head is the new head we created that expects doubled channels
+#         self.head = self.original_model.head
+
+#     def forward(self, x, targets=None):
+#         # 1. Split the 6-channel input into two 3-channel images
+#         c = x.shape[1] // 2
+#         x_before = x[:, :c, :, :]
+#         x_after = x[:, c:, :, :]
+
+#         # 2. Get separate embeddings from the backbone (FPN features)
+#         fpn_outs_before = self.backbone(x_before)
+#         fpn_outs_after = self.backbone(x_after)
+
+#         # 3. Combine the embeddings using concatenation
+#         fpn_outs_combined = []
+#         # The fpn_outs are tuples, so we iterate through them
+#         for fpn_before, fpn_after in zip(fpn_outs_before, fpn_outs_after):
+#             # Concatenate along the channel dimension (dim=1)
+#             combined = torch.cat([fpn_before, fpn_after], dim=1)
+#             fpn_outs_combined.append(combined)
+        
+#         # Convert list back to a tuple for the head
+#         fpn_outs_combined = tuple(fpn_outs_combined)
+
+#         # 4. Pass the combined features to the head for prediction
+#         if self.training:
+#             assert targets is not None
+#             # The YOLOX head needs the FPN outputs, targets, and the input image tensor
+#             # We pass `x_after` as the reference image for loss calculation scaling
+#             return self.head(fpn_outs_combined, targets, x_after)
+#         else:
+#             return self.head(fpn_outs_combined)
+
+# Add embeddings custom model
+class ModelWrapper(nn.Module):
+    """
+    A wrapper that processes a 6-channel input by splitting it into two
+    3-channel streams, passing each through the backbone, and fusing the
+    resulting feature maps using element-wise addition.
+    """
+    def __init__(self, original_model):
+        super().__init__()
+        self.original_model = original_model
+        # The backbone is called twice on the separate inputs
+        self.backbone = self.original_model.backbone
+        # The original head is used without any modification
+        self.head = self.original_model.head
+
+    def forward(self, x, targets=None):
+        # 1. Split the 6-channel input into 'before' and 'after' images
+        c = x.shape[1] // 2
+        x_before = x[:, :c, :, :]
+        x_after = x[:, c:, :, :]
+
+        # 2. Get separate FPN feature maps for each image
+        fpn_outs_before = self.backbone(x_before)
+        fpn_outs_after = self.backbone(x_after)
+
+        # 3. Fuse the feature maps using element-wise addition
+        fpn_outs_fused = []
+        for fpn_before, fpn_after in zip(fpn_outs_before, fpn_outs_after):
+            # The core fusion logic: simply add the tensors together
+            fused = fpn_before + fpn_after
+            fpn_outs_fused.append(fused)
+        
+        # Convert the list of fused feature maps back to a tuple
+        fpn_outs_fused = tuple(fpn_outs_fused)
+
+        # 4. Pass the fused features to the standard YOLOX head
+        if self.training:
+            return self.head(fpn_outs_fused, targets, x_after)
+        else:
+            return self.head(fpn_outs_fused)
 
 
 class ChannelAttentionModule(nn.Module):
@@ -105,42 +186,42 @@ class AttentionFusion(nn.Module):
         
         return f_after_refined
 
+# fused attention custom model
+# class ModelWrapper(nn.Module):
+#     def __init__(self, original_model):
+#         super().__init__()
+#         self.original_model = original_model
+#         self.backbone = self.original_model.backbone
+#         self.head = self.original_model.head
 
-class ModelWrapper(nn.Module):
-    def __init__(self, original_model):
-        super().__init__()
-        self.original_model = original_model
-        self.backbone = self.original_model.backbone
-        self.head = self.original_model.head
+#         # --- Create fusion modules for each FPN level ---
+#         self.fusion_p3 = AttentionFusion(channels=256)
+#         self.fusion_p4 = AttentionFusion(channels=512)
+#         self.fusion_p5 = AttentionFusion(channels=1024)
 
-        # --- Create fusion modules for each FPN level ---
-        self.fusion_p3 = AttentionFusion(channels=256)
-        self.fusion_p4 = AttentionFusion(channels=512)
-        self.fusion_p5 = AttentionFusion(channels=1024)
+#     def forward(self, x, targets=None):
+#         c = x.shape[1] // 2
+#         x_before = x[:, :c, :, :]
+#         x_after = x[:, c:, :, :]
 
-    def forward(self, x, targets=None):
-        c = x.shape[1] // 2
-        x_before = x[:, :c, :, :]
-        x_after = x[:, c:, :, :]
+#         fpn_outs_before = self.backbone(x_before)
+#         fpn_outs_after = self.backbone(x_after)
 
-        fpn_outs_before = self.backbone(x_before)
-        fpn_outs_after = self.backbone(x_after)
+#         # Unpack features for clarity
+#         p3_before, p4_before, p5_before = fpn_outs_before
+#         p3_after, p4_after, p5_after = fpn_outs_after
 
-        # Unpack features for clarity
-        p3_before, p4_before, p5_before = fpn_outs_before
-        p3_after, p4_after, p5_after = fpn_outs_after
+#         # Apply attention-based fusion with a residual connection
+#         fused_p3 = p3_after + self.fusion_p3(p3_after, p3_before)
+#         fused_p4 = p4_after + self.fusion_p4(p4_after, p4_before)
+#         fused_p5 = p5_after + self.fusion_p5(p5_after, p5_before)
 
-        # Apply attention-based fusion with a residual connection
-        fused_p3 = p3_after + self.fusion_p3(p3_after, p3_before)
-        fused_p4 = p4_after + self.fusion_p4(p4_after, p4_before)
-        fused_p5 = p5_after + self.fusion_p5(p5_after, p5_before)
+#         fpn_outs_fused = (fused_p3, fused_p4, fused_p5)
 
-        fpn_outs_fused = (fused_p3, fused_p4, fused_p5)
-
-        if self.training:
-            return self.head(fpn_outs_fused, targets, x_after)
-        else:
-            return self.head(fpn_outs_fused)
+#         if self.training:
+#             return self.head(fpn_outs_fused, targets, x_after)
+#         else:
+#             return self.head(fpn_outs_fused)
 
 class Exp(MyExp):
     def __init__(self):
@@ -163,6 +244,28 @@ class Exp(MyExp):
         self.model = ModelWrapper(original_model, in_channels=6)
 
         return self.model
+
+    # get concat-embeddings custom model
+    # def get_model(self):
+    #     from yolox.models import YOLOX, YOLOPAFPN, YOLOXHead
+    #     in_channels = [256, 512, 1024]
+        
+    #     super().get_model()
+    #     original_model = self.model
+
+    #     doubled_in_channels = [c * 2 for c in in_channels]
+    #     new_head = YOLOXHead(
+    #         self.num_classes,
+    #         width=self.width,
+    #         in_channels=doubled_in_channels
+    #     )
+
+    #     original_model.head = new_head
+        
+    #     self.model = ModelWrapper(original_model)
+
+    #     return self.model
+
 
     def get_dataset(self, cache: bool = False, cache_type: str = "ram"):
         assert self.before_data_dir is not None, "You must set `self.before_data_dir` in the experiment file."
